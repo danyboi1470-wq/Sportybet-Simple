@@ -1,33 +1,192 @@
-{
-  "name": "Python 3",
-  // Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
-  "image": "mcr.microsoft.com/devcontainers/python:1-3.11-bookworm",
-  "customizations": {
-    "codespaces": {
-      "openFiles": [
-        "README.md",
-        "app.py"
-      ]
-    },
-    "vscode": {
-      "settings": {},
-      "extensions": [
-        "ms-python.python",
-        "ms-python.vscode-pylance"
-      ]
-    }
-  },
-  "updateContentCommand": "[ -f packages.txt ] && sudo apt update && sudo apt upgrade -y && sudo xargs apt install -y <packages.txt; [ -f requirements.txt ] && pip3 install --user -r requirements.txt; pip3 install --user streamlit; echo '✅ Packages installed and Requirements met'",
-  "postAttachCommand": {
-    "server": "streamlit run app.py --server.enableCORS false --server.enableXsrfProtection false"
-  },
-  "portsAttributes": {
-    "8501": {
-      "label": "Application",
-      "onAutoForward": "openPreview"
-    }
-  },
-  "forwardPorts": [
-    8501
-  ]
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Multi-Match EV Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4.0.2/dist/tesseract.min.js"></script>
+    <style>
+        body{font-family:sans-serif;padding:15px;background:#f0f2f5;color:#333;line-height:1.4;}
+        .match-box{border:1px solid #ddd;background:#fff;padding:15px;margin-bottom:15px;border-radius:8px;box-shadow:0 2px 4px rgba(0,0,0,0.05);}
+        .best{background:#e6fffa;border:1px solid #38b2ac;padding:8px;border-radius:4px;margin:10px 0;}
+        .highEV{border-left:5px solid #4299e1;}
+        .ELITE{color:#2f855a;font-weight:bold;}
+        .OK{color:#c05621;font-weight:bold;}
+        .LOW{color:#c53030;font-weight:bold;}
+        table{border-collapse:collapse;width:100%;margin-top:10px;font-size:0.9em;}
+        td,th{border:1px solid #edf2f7;padding:8px;text-align:center;}
+        th{background:#f7fafc;}
+        textarea{width:100%;height:100px;margin:10px 0;padding:10px;border-radius:4px;border:1px solid #ccc;}
+        button{padding:10px 20px;background:#3182ce;color:white;border:none;border-radius:4px;cursor:pointer;font-weight:bold;}
+        button:hover{background:#2b6cb0;}
+    </style>
+</head>
+<body>
+    <h2>⚡ Multi-Match EV Dashboard</h2>
+
+    <div class="match-box">
+        <h3>Upload Screenshot:</h3>
+        <input type="file" id="screenshot" accept="image/*"><br><br>
+        <button onclick="processScreenshot()">Analyze Screenshot</button>
+    </div>
+
+    <div class="match-box">
+        <h3>Paste Odds/Text:</h3>
+        <textarea id="matchText" placeholder="Example: England League, 1.85, 2.10, 55', shots 10, target 4"></textarea>
+        <button onclick="processText()">Analyze Text</button>
+    </div>
+
+    <div id="results"></div>
+
+<script>
+const BANKROLL = 1000;
+const probs = {
+    ELITE:{"FT O1.5":0.9,"O2.5":0.62,"DRAW":0.25},
+    MID:{"FH O1.5":0.75,"O2.5":0.75},
+    LOW:{"DRAW":0.40},
+    SA:{"DRAW":0.45},
+    ASIA:{"BTTS YES":0.75},
+    AFRICA:{"LATE GOAL":0.75},
+    OCEANIA:{"O2.5":0.8}
+};
+
+function league(t){
+    if(!t) return "ELITE";
+    t = t.toLowerCase();
+    if(t.includes("england") || t.includes("spain") || t.includes("germany")) return "ELITE";
+    if(t.includes("netherlands") || t.includes("belgium")) return "MID";
+    if(t.includes("romania")) return "LOW";
+    if(t.includes("brazil") || t.includes("argentina")) return "SA";
+    if(t.includes("saudi") || t.includes("japan")) return "ASIA";
+    if(t.includes("nigeria")) return "AFRICA";
+    if(t.includes("australia")) return "OCEANIA";
+    return "ELITE";
 }
+
+function extract(t){
+    const odds = t.match(/\d+(\.\d+)?/g) || [];
+    return {
+        o15: parseFloat(odds[0]) || 1.7,
+        o25: parseFloat(odds[1]) || 2.2,
+        btts: parseFloat(odds[2]) || 1.9,
+        score: (t.match(/\d+-\d+/) || ["0-0"])[0],
+        minute: parseInt((t.match(/(\d{1,2})'/)||[0,0])[1]) || 0,
+        shots: parseInt((t.match(/shots\s*(\d+)/i)||[0,0])[1]) || 0,
+        onTarget: parseInt((t.match(/target\s*(\d+)/i)||[0,0])[1]) || 0,
+        poss: parseInt((t.match(/poss\s*(\d+)/i)||[0,0])[1]) || 50
+    };
+}
+
+function stake(prob, odds){
+    const edge = (prob * odds) - 1;
+    if(edge <= 0) return 0;
+    let s = BANKROLL * ((edge / (odds - 1)) * 0.5);
+    return Math.min(Math.max(Math.round(s), 10), 50);
+}
+
+function tag(prob, minute){
+    if(prob >= 0.75 && minute >= 55) return "ELITE";
+    if(prob >= 0.65) return "OK";
+    return "LOW";
+}
+
+function liveEdge(d){
+    let boost = 0;
+    if(d.shots >= 8) boost += 0.05;
+    if(d.onTarget >= 3) boost += 0.05;
+    if(d.shots <= 4 && d.minute >= 60) boost -= 0.05; // Penalty for low activity
+    return boost;
+}
+
+function executionMap(d){
+    let map = [];
+    for(let m = d.minute; m <= Math.min(d.minute + 20, 90); m += 5){
+        let hint = d.shots >= 5 ? "Strong Bet" : "Monitor";
+        map.push({
+            minute: m,
+            shots: d.shots + Math.floor((m - d.minute)/6),
+            onTarget: d.onTarget + Math.floor((m - d.minute)/12),
+            poss: d.poss,
+            action: hint
+        });
+    }
+    return map;
+}
+
+function analyzeMatch(text){
+    if(!text.trim()) return {bestSingle:null};
+    const lg = league(text);
+    const d = extract(text);
+    let picks = [];
+    
+    function add(name, odds){
+        let prob = probs[lg]?.[name];
+        if(!prob) return;
+        prob += liveEdge(d);
+        const st = stake(prob, odds);
+        const ev = (prob * odds) - 1;
+        if(ev > 0) {
+            picks.push({bet:name, prob:(prob*100).toFixed(0)+"%", odds:odds.toFixed(2), stake:st, tag:tag(prob, d.minute), ev});
+        }
+    }
+
+    if(lg==="ELITE") add("FT O1.5", d.o15);
+    if(lg==="MID"){ add("FH O1.5", d.o15); add("O2.5", d.o25);}
+    if((lg==="LOW"||lg==="SA") && d.minute >= 55 && d.score === "0-0") add("DRAW", 3.0);
+    if(lg==="ASIA") add("BTTS YES", d.btts);
+    if(d.minute >= 80) add("LATE GOAL", 2.0);
+
+    if(picks.length === 0) return {bestSingle:null};
+    picks.sort((a,b) => b.ev - a.ev);
+
+    return {
+        bestSingle: picks[0],
+        ticketA: picks.slice(0, 2),
+        ticketB: picks.length > 1 ? picks.slice(1, 3) : [],
+        instruction: picks[0].bet === "DRAW" ? "ENTER @ 55-70 MIN" : "PLAY EARLY",
+        map: executionMap(d)
+    };
+}
+
+function renderMatch(r, index){
+    if(!r || !r.bestSingle) return `<div class="match-box"><b>Match ${index+1}:</b> No High EV Bets Found</div>`;
+    let evClass = r.bestSingle.ev >= 0.15 ? "highEV" : "";
+    
+    return `
+    <div class="match-box ${evClass}">
+        <strong>Match ${index+1}</strong>
+        <div class="pick best">
+            <b>${r.bestSingle.bet}</b> @ ${r.bestSingle.odds}<br>
+            Stake: ${r.bestSingle.stake}u | Tag: <span class="${r.bestSingle.tag}">${r.bestSingle.tag}</span> | EV: ${r.bestSingle.ev.toFixed(2)}<br>
+            <i>${r.instruction}</i>
+        </div>
+        <div><b>Combo A:</b> ${r.ticketA.map(p=>`${p.bet} (${p.odds})`).join(" + ")}</div>
+        ${r.ticketB.length ? `<div><b>Combo B:</b> ${r.ticketB.map(p=>`${p.bet} (${p.odds})`).join(" + ")}</div>` : ""}
+        <table>
+            <tr><th>Min</th><th>Shots</th><th>Target</th><th>Action</th></tr>
+            ${r.map.map(row=>`<tr><td>${row.minute}'</td><td>${row.shots}</td><td>${row.onTarget}</td><td>${row.action}</td></tr>`).join("")}
+        </table>
+    </div>`;
+}
+
+function processText(){
+    const text = document.getElementById("matchText").value;
+    const lines = text.split("\n").filter(l => l.trim() !== "");
+    let results = lines.map(line => analyzeMatch(line));
+    results.sort((a,b) => (b.bestSingle?.ev || 0) - (a.bestSingle?.ev || 0));
+    document.getElementById("results").innerHTML = results.map((r,i) => renderMatch(r,i)).join("");
+}
+
+async function processScreenshot(){
+    const file = document.getElementById("screenshot").files[0];
+    if(!file) return alert("Please select an image");
+    const btn = document.querySelector("button");
+    btn.innerText = "Processing...";
+    
+    const { data: { text } } = await Tesseract.recognize(file, 'eng');
+    document.getElementById("matchText").value = text;
+    processText();
+    btn.innerText = "Analyze Screenshot";
+}
+</script>
+</body>
+</html>
